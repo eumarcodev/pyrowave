@@ -2,25 +2,18 @@
 
 # Only checks out what is necessary to build standalone.
 #
-GRANITE_COMMIT=53090429539bf3404250d18fe58db971f0907c04
+# Granite is a git submodule pinned by this repository (see .gitmodules).
+# Do not use `git clone --recursive` or `git submodule update --recursive`
+# for the standalone build: Granite has many nested submodules that are not needed.
+set -e
 
-if [ -d Granite ]; then
-	cd Granite
-	git fetch origin
-	git checkout $GRANITE_COMMIT
-else
-	git clone https://github.com/Themaister/Granite
-	cd Granite
-	git checkout $GRANITE_COMMIT
-fi
+cd "$(dirname "$0")"
 
-cd ..
-
-update() {
-	git submodule sync $1
-	git submodule update --init $1
-}
+git submodule sync --quiet Granite
+git submodule update --init Granite
 
 cd Granite
-update third_party/volk
-update third_party/khronos/vulkan-headers
+for module in third_party/volk third_party/khronos/vulkan-headers; do
+	git submodule sync --quiet $module
+	git submodule update --init $module
+done
