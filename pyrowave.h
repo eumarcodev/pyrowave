@@ -166,6 +166,16 @@ PYROWAVE_PUBLIC_API pyrowave_result pyrowave_create_device_by_compat(
 	VkQueueGlobalPriority global_priority,
 	pyrowave_device *device);
 
+// Like pyrowave_create_device_by_compat, but picks the first suitable GPU and enables the given instance and
+// device extensions in addition to what pyrowave needs. The extensions are required: creation fails if they
+// are not supported. Intended for applications which present the decoded image on a surface using the
+// handles from pyrowave_device_get_vk_device_handles, e.g. VK_KHR_surface, VK_KHR_android_surface and VK_KHR_swapchain.
+PYROWAVE_PUBLIC_API pyrowave_result pyrowave_create_device_with_extensions(
+	VkQueueGlobalPriority global_priority,
+	const char *const *instance_extensions, uint32_t instance_extension_count,
+	const char *const *device_extensions, uint32_t device_extension_count,
+	pyrowave_device *device);
+
 // Even if HIGH or REALTIME is requested, the system may not allow it.
 // On Linux at least, the process needs either root or CAP_SYS_NICE permissions to request > MEDIUM.
 // MEDIUM is the normal default.
