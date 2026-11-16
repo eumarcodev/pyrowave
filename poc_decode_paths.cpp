@@ -96,6 +96,39 @@ int main(int argc, char **argv)
 	CHECKED(pyrowave_encoder_packetize(encoder, packets.data(), budget + 4096, &out_pk, stream.data(), stream.size()));
 	printf("encoded: %zu bytes in %zu packet(s)\n", packets[0].size, out_pk);
 
+	if (argc > 4)
+	{
+		// Does pushing the whole packetized frame in one call equal pushing packet by packet?
+		size_t boundary = size_t(atoi(argv[4]));
+		CHECKED(pyrowave_encoder_compute_num_packets(encoder, boundary, &npk));
+		std::vector<pyrowave_packet> small(npk);
+		std::vector<uint8_t> sstream(budget + 4096 + 4096);
+		size_t spk = 0;
+		CHECKED(pyrowave_encoder_packetize(encoder, small.data(), boundary, &spk, sstream.data(), sstream.size()));
+		size_t total = 0, expected_offset = 0;
+		bool contiguous = true;
+		for (size_t i = 0; i < spk; i++) { contiguous &= small[i].offset == expected_offset; expected_offset += small[i].size; total += small[i].size; }
+		printf("packetized at %zu: %zu packets, %zu bytes, contiguous=%d\n", boundary, spk, total, contiguous ? 1 : 0);
+
+		pyrowave_decoder_create_info dci = {};
+		dci.device = device; dci.width = w; dci.height = h; dci.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+		dci.fragment_path = false;
+		pyrowave_decoder dec_a, dec_b;
+		CHECKED(pyrowave_decoder_create(&dci, &dec_a));
+		CHECKED(pyrowave_decoder_create(&dci, &dec_b));
+		for (size_t i = 0; i < spk; i++)
+			CHECKED(pyrowave_decoder_push_packet(dec_a, sstream.data() + small[i].offset, small[i].size));
+		pyrowave_result r = pyrowave_decoder_push_packet(dec_b, sstream.data(), total);
+		printf("push whole frame in one call: result %d, ready: per-packet=%d whole=%d\n", (int)r,
+		       pyrowave_decoder_decode_is_ready(dec_a, false) ? 1 : 0, pyrowave_decoder_decode_is_ready(dec_b, false) ? 1 : 0);
+		Image oa(w, h), ob(w, h);
+		CHECKED(pyrowave_decoder_decode_cpu_buffer_synchronous(dec_a, &oa.buf));
+		CHECKED(pyrowave_decoder_decode_cpu_buffer_synchronous(dec_b, &ob.buf));
+		printf("outputs identical: luma=%d cb=%d cr=%d\n", oa.y == ob.y, oa.cb == ob.cb, oa.cr == ob.cr);
+		pyrowave_decoder_destroy(dec_a);
+		pyrowave_decoder_destroy(dec_b);
+	}
+
 	for (int frag = 0; frag < 2; frag++)
 	{
 		pyrowave_decoder_create_info dci = {};
