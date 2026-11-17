@@ -28,6 +28,7 @@ EXPORTS
 	pyrowave_encoder_encode_gpu_scaled
 	pyrowave_encoder_encode_cpu
 	pyrowave_encoder_set_frame_context
+	pyrowave_encoder_set_rate_control_hysteresis
 	pyrowave_encoder_compute_num_packets
 	pyrowave_encoder_compute_num_packets_with_padding
 	pyrowave_encoder_compute_num_critical_packets

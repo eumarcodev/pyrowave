@@ -502,6 +502,14 @@ pyrowave_encoder_encode_gpu(pyrowave_encoder encoder,
 PYROWAVE_PUBLIC_API pyrowave_result
 pyrowave_encoder_set_frame_context(pyrowave_encoder encoder, int context);
 
+// Stable rate control for streams where most of the picture stays the same between frames.
+// With 0 (the default) every frame uses the whole target size, and a still area can change when another part
+// of the picture changes, which shows as flicker. With buckets > 0 the encoder keeps the rate control cutoff
+// of the previous frame while it fits the target size and is at most buckets - 1 steps higher than needed.
+// Frames are then a little smaller than the target size. There are 2048 steps; 16 is a reasonable start.
+PYROWAVE_PUBLIC_API pyrowave_result
+pyrowave_encoder_set_rate_control_hysteresis(pyrowave_encoder encoder, int buckets);
+
 typedef struct pyrowave_scaled_encode_info
 {
 	// Input view must be some RGB(A) UNORM format.

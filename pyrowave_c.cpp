@@ -1403,6 +1403,16 @@ static bool pyrowave_cpu_buffer_format_16bit(pyrowave_cpu_buffer_format format)
 }
 
 pyrowave_result
+pyrowave_encoder_set_rate_control_hysteresis(pyrowave_encoder encoder, int buckets)
+{
+	if (buckets < 0 || buckets > 2048)
+		return PYROWAVE_ERROR_INVALID_ARGUMENT;
+
+	encoder->encoder.set_rate_control_hysteresis(buckets);
+	return PYROWAVE_SUCCESS;
+}
+
+pyrowave_result
 pyrowave_encoder_set_frame_context(pyrowave_encoder encoder, int context)
 {
 	if (context >= PYROWAVE_MAX_FRAME_CONTEXTS)
