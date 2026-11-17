@@ -74,6 +74,11 @@ struct Encoder::Impl final : public WaveletBuffers
 {
 	BufferHandle bucket_buffer, meta_buffer, block_stat_buffer, payload_data, quant_buffer;
 
+	// Stable rate control, see resolve_rate_control.comp. 0 is off.
+	int rate_control_hysteresis = 0;
+	bool bucket_buffer_initialized = false;
+	void clear_bucket_buffer(CommandBuffer &cmd);
+
 	bool encode(CommandBuffer &cmd, const ViewBuffers &views, const BitstreamBuffers &buffers);
 	bool encode_pre_transformed(CommandBuffer &cmd, const BitstreamBuffers &buffers, float quant_scale);
 	bool encode_quant_and_coding(CommandBuffer &cmd, const BitstreamBuffers &buffers, float quant_scale);
@@ -282,6 +287,37 @@ bool Encoder::Impl::block_packing(CommandBuffer &cmd, const BitstreamBuffers &bu
 	cmd.end_region();
 
 	return true;
+}
+
+// Layout of the first words of the bucket buffer, shared with the rate control shaders
+static constexpr VkDeviceSize BucketPrevCutoffOffset = 8;
+static constexpr VkDeviceSize BucketNextCutoffOffset = 12;
+static constexpr VkDeviceSize BucketHysteresisOffset = 16;
+
+void Encoder::Impl::clear_bucket_buffer(CommandBuffer &cmd)
+{
+	const VkDeviceSize size = bucket_buffer->get_create_info().size;
+
+	if (!bucket_buffer_initialized)
+	{
+		cmd.fill_buffer(*bucket_buffer, 0);
+		bucket_buffer_initialized = true;
+	}
+	else
+	{
+		// The cutoff chosen by the previous frame becomes the one to compare against. Everything else
+		// starts from zero again.
+		cmd.copy_buffer(*bucket_buffer, BucketPrevCutoffOffset, *bucket_buffer, BucketNextCutoffOffset, sizeof(uint32_t));
+		cmd.barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+		            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		            VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		cmd.fill_buffer(*bucket_buffer, 0, 0, BucketPrevCutoffOffset);
+		cmd.fill_buffer(*bucket_buffer, 0, BucketNextCutoffOffset, sizeof(uint32_t));
+		cmd.fill_buffer(*bucket_buffer, 0, BucketHysteresisOffset + sizeof(uint32_t),
+		                size - (BucketHysteresisOffset + sizeof(uint32_t)));
+	}
+
+	cmd.fill_buffer(*bucket_buffer, uint32_t(rate_control_hysteresis), BucketHysteresisOffset, sizeof(uint32_t));
 }
 
 bool Encoder::Impl::resolve_rdo(CommandBuffer &cmd, size_t target_payload_size)
@@ -1182,7 +1218,7 @@ bool Encoder::Impl::encode_pre_transformed(
 		Vulkan::CommandBuffer &cmd, const BitstreamBuffers &buffers, float quant_scale)
 {
 	cmd.fill_buffer(*payload_data, 0, 0, 2 * sizeof(uint32_t));
-	cmd.fill_buffer(*bucket_buffer, 0);
+	clear_bucket_buffer(cmd);
 	cmd.fill_buffer(*quant_buffer, 0);
 
 	// Don't need to read the payload offset counter until quantizer.
@@ -1209,7 +1245,7 @@ bool Encoder::Impl::encode(CommandBuffer &cmd, const ViewBuffers &views, const B
 	}
 
 	cmd.fill_buffer(*payload_data, 0, 0, 2 * sizeof(uint32_t));
-	cmd.fill_buffer(*bucket_buffer, 0);
+	clear_bucket_buffer(cmd);
 	cmd.fill_buffer(*quant_buffer, 0);
 
 	cmd.enable_subgroup_size_control(true);
@@ -1314,6 +1350,11 @@ size_t Encoder::get_num_active_blocks(int bands) const
 void Encoder::compute_block_active_words(int bands, uint32_t *words, size_t word_count, const void *mapped_meta) const
 {
 	impl->compute_block_active_words(bands, words, word_count, mapped_meta);
+}
+
+void Encoder::set_rate_control_hysteresis(int buckets)
+{
+	impl->rate_control_hysteresis = buckets < 0 ? 0 : buckets;
 }
 
 Encoder::~Encoder()

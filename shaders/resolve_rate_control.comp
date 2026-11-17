@@ -16,11 +16,17 @@ struct RDOperation
 };
 
 const int BLOCK_SPACE_SUBDIVISION = 16;
+const int NUM_BUCKETS = 128 * BLOCK_SPACE_SUBDIVISION;
 
-layout(set = 0, binding = 0) readonly buffer Buckets
+layout(set = 0, binding = 0) buffer Buckets
 {
     layout(offset = 4) int consumed_payload;
-    layout(offset = 64) int total_savings_per_bucket[128 * BLOCK_SPACE_SUBDIVISION];
+    // Stable rate control. These three survive from one frame to the next, the rest is cleared.
+    // Cutoffs are stored as bucket index + 1, so 0 means "no bucket takes part".
+    layout(offset = 8) int stable_prev_cutoff;  // what the previous frame used
+    layout(offset = 12) int stable_next_cutoff; // what this frame uses, read back by the next one
+    layout(offset = 16) int stable_hysteresis;  // 0 = off, N = keep the cutoff while it is at most N - 1 buckets too high
+    layout(offset = 64) int total_savings_per_bucket[NUM_BUCKETS];
     RDOperation rdo_operations[];
 } buckets;
 
@@ -35,32 +41,88 @@ layout(push_constant) uniform Registers
     uint num_blocks_per_subdivision;
 } registers;
 
+// True when the frame only fits in the target size if bucket x takes part.
+// Buckets are ordered by how little the picture loses per byte saved, so this is true up to some bucket
+// and false after it.
+bool bucket_is_needed(int x, int required_savings)
+{
+    if (x >= NUM_BUCKETS)
+        return false;
+    if (x <= 0)
+        return required_savings > 0;
+    return required_savings - buckets.total_savings_per_bucket[x - 1] > 0;
+}
+
 void main()
 {
-    int required_savings_per_bucket = int(buckets.consumed_payload) - int(registers.target_payload_size);
-    if (gl_WorkGroupID.x != 0)
-    {
-        int prev_bucket_total = buckets.total_savings_per_bucket[gl_WorkGroupID.x - 1];
-        // This bucket is empty.
-        if (buckets.total_savings_per_bucket[gl_WorkGroupID.x] == prev_bucket_total)
-            return;
+    int bucket = int(gl_WorkGroupID.x);
+    int required_savings = int(buckets.consumed_payload) - int(registers.target_payload_size);
 
-        required_savings_per_bucket -= prev_bucket_total;
+    // Without the stable mode, the last bucket that takes part is applied only as far as needed, in block
+    // order. The frame then uses the whole target size, but which blocks of that bucket get the coarser
+    // quantizer depends on every other block of the frame: a small change anywhere on screen moves the cut
+    // and still areas change with it, which shows as flicker.
+    //
+    // The stable mode applies whole buckets, so a block only depends on its own content and on the cutoff
+    // bucket. The cutoff of the previous frame is kept while it still fits the target size and is not more
+    // than the hysteresis too high, so it only moves when the content changes enough.
+    int hysteresis = buckets.stable_hysteresis;
+    bool stable = hysteresis > 0;
+    bool hold = false;
+    int prev_cutoff = buckets.stable_prev_cutoff;
+
+    if (stable)
+    {
+        hold = prev_cutoff > 0 &&
+               !bucket_is_needed(prev_cutoff, required_savings) &&
+               bucket_is_needed(prev_cutoff - hysteresis, required_savings);
+
+        // Exactly one bucket records the cutoff for the next frame.
+        if (hold)
+        {
+            if (bucket == 0)
+                buckets.stable_next_cutoff = prev_cutoff;
+        }
+        else if (required_savings <= 0)
+        {
+            if (bucket == 0)
+                buckets.stable_next_cutoff = 0;
+        }
+        else if (bucket_is_needed(bucket, required_savings) && !bucket_is_needed(bucket + 1, required_savings))
+        {
+            buckets.stable_next_cutoff = bucket + 1;
+        }
+    }
+
+    int prev_bucket_total = 0;
+    if (bucket != 0)
+        prev_bucket_total = buckets.total_savings_per_bucket[bucket - 1];
+
+    // This bucket is empty.
+    if (buckets.total_savings_per_bucket[bucket] == prev_bucket_total)
+        return;
+
+    int required_savings_per_bucket = required_savings - prev_bucket_total;
+    uint savings_limit;
+
+    if (stable)
+    {
+        bool takes_part = hold ? bucket < prev_cutoff : required_savings_per_bucket > 0;
+        if (!takes_part)
+            return;
+        savings_limit = ~0u;
     }
     else
     {
-        // This bucket is empty.
-        if (buckets.total_savings_per_bucket[gl_WorkGroupID.x] == 0)
+        // If all previous buckets can complete the job, skip.
+        if (required_savings_per_bucket <= 0)
             return;
+        savings_limit = uint(required_savings_per_bucket);
     }
-
-    // If all previous buckets can complete the job, skip.
-    if (required_savings_per_bucket <= 0)
-        return;
 
     uint total_saved = 0;
 
-    for (uint i = 0; i < registers.num_blocks_per_subdivision && total_saved < required_savings_per_bucket; i += gl_SubgroupSize)
+    for (uint i = 0; i < registers.num_blocks_per_subdivision && total_saved < savings_limit; i += gl_SubgroupSize)
     {
         RDOperation op = RDOperation(0, 0);
         if (i + gl_SubgroupInvocationID < registers.num_blocks_per_subdivision)
@@ -71,11 +133,10 @@ void main()
 
         uint scan_saving = subgroupInclusiveAdd(saving);
 
-        bool should_apply_quant = total_saved + scan_saving - saving < required_savings_per_bucket;
+        bool should_apply_quant = total_saved + scan_saving - saving < savings_limit;
         if (should_apply_quant && saving != 0)
             atomicMax(quant_data.data[block_offset], op.quant);
 
         total_saved += subgroupShuffle(scan_saving, gl_SubgroupSize - 1);
     }
 }
-

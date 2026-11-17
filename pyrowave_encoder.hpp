@@ -37,6 +37,13 @@ public:
 	bool init(Vulkan::Device *device, int width, int height, ChromaSubsampling chroma);
 	bool encode(Vulkan::CommandBuffer &cmd, const ViewBuffers &views, const BitstreamBuffers &buffers);
 
+	// Stable rate control. With 0 (the default) every frame uses the whole target size, and which blocks get
+	// a coarser quantizer depends on the whole frame, so a still area can change when another part of the
+	// picture changes. With N > 0 whole rate control buckets are applied and the cutoff of the previous frame
+	// is kept while it fits the target size and is at most N - 1 buckets higher than needed. Frames come out
+	// a little under the target size, and still areas stay identical from frame to frame.
+	void set_rate_control_hysteresis(int buckets);
+
 	// Debug hackery
 	const Vulkan::ImageView &get_wavelet_band(int component, int level);
 	bool encode_pre_transformed(Vulkan::CommandBuffer &cmd, const BitstreamBuffers &buffers, float quant_scale);
