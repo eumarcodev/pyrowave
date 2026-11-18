@@ -38,6 +38,7 @@ EXPORTS
 	pyrowave_encoder_get_mapped_raw_bitstream
 	pyrowave_encoder_get_num_active_blocks
 	pyrowave_encoder_compute_block_active_words
+	pyrowave_encoder_invalidate_views
 	pyrowave_encoder_destroy
 	pyrowave_decoder_device_prefers_fragment_path
 	pyrowave_decoder_create
@@ -50,5 +51,6 @@ EXPORTS
 	pyrowave_decoder_decode_cpu_buffer_async
 	pyrowave_decoder_decode_cpu_buffer_complete
 	pyrowave_decoder_set_ycbcr_scaling_factor
+	pyrowave_decoder_invalidate_views
 	pyrowave_decoder_destroy
 
