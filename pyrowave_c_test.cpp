@@ -846,6 +846,96 @@ static void test_basic_system_stability(bool realtime_prio)
 	pyrowave_device_destroy(device);
 }
 
+// A block header that repeats an already received block with payload_words < 2 used to make
+// push_packet() loop forever (it advanced by payload_words * 4 bytes, so by 0).
+static void test_malformed_duplicate_block()
+{
+	pyrowave_device device;
+	CHECKED(pyrowave_create_default_device(&device));
+
+	constexpr int Width = 1280;
+	constexpr int Height = 720;
+
+	pyrowave_decoder_create_info decoder_info = {};
+	decoder_info.device = device;
+	decoder_info.width = Width;
+	decoder_info.height = Height;
+	decoder_info.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+
+	pyrowave_encoder_create_info encoder_info = {};
+	encoder_info.device = device;
+	encoder_info.width = Width;
+	encoder_info.height = Height;
+	encoder_info.chroma = PYROWAVE_CHROMA_SUBSAMPLING_420;
+
+	pyrowave_decoder decoder;
+	pyrowave_encoder encoder;
+	CHECKED(pyrowave_decoder_create(&decoder_info, &decoder));
+	CHECKED(pyrowave_encoder_create(&encoder_info, &encoder));
+
+	std::vector<uint8_t> luma(Width * Height);
+	std::vector<uint8_t> chroma(Width * Height / 4, 128);
+	for (int y = 0; y < Height; y++)
+		for (int x = 0; x < Width; x++)
+			luma[y * Width + x] = uint8_t(x / 5 + 3 * y);
+
+	pyrowave_cpu_buffer cpu_buffer = {};
+	cpu_buffer.format = PYROWAVE_CPU_BUFFER_FORMAT_YUV420P;
+	cpu_buffer.width = Width;
+	cpu_buffer.height = Height;
+	cpu_buffer.data[0] = luma.data();
+	cpu_buffer.data[1] = chroma.data();
+	cpu_buffer.data[2] = chroma.data();
+	cpu_buffer.row_stride_in_bytes[0] = Width;
+	cpu_buffer.row_stride_in_bytes[1] = Width / 2;
+	cpu_buffer.row_stride_in_bytes[2] = Width / 2;
+	cpu_buffer.plane_size_in_bytes[0] = luma.size();
+	cpu_buffer.plane_size_in_bytes[1] = chroma.size();
+	cpu_buffer.plane_size_in_bytes[2] = chroma.size();
+
+	const pyrowave_rate_control rate_control = { 200000 };
+	CHECKED(pyrowave_encoder_encode_cpu(encoder, &cpu_buffer, &rate_control));
+
+	size_t num_packets;
+	CHECKED(pyrowave_encoder_compute_num_packets(encoder, 1392, &num_packets));
+	std::vector<pyrowave_packet> packets(num_packets);
+	std::vector<uint8_t> bitstream(rate_control.maximum_bitstream_size + 64 * 1024);
+	CHECKED(pyrowave_encoder_packetize(encoder, packets.data(), 1392, &num_packets, bitstream.data(), bitstream.size()));
+	bitstream.resize(packets[num_packets - 1].offset + packets[num_packets - 1].size);
+
+	// The whole frame is accepted as one push.
+	pyrowave_decoder_clear(decoder);
+	CHECKED(pyrowave_decoder_push_packet(decoder, bitstream.data(), bitstream.size()));
+	ASSERT_THAT(pyrowave_decoder_decode_is_ready(decoder, false));
+
+	// The stream starts with an 8 byte sequence header, then the first block header.
+	for (uint16_t bad_payload_words = 0; bad_payload_words < 2; bad_payload_words++)
+	{
+		uint8_t duplicate[8];
+		memcpy(duplicate, bitstream.data() + 8, sizeof(duplicate));
+		uint16_t word;
+		memcpy(&word, duplicate + 2, sizeof(word));
+		// payload_words is the low 12 bits. Keep the sequence and extended bits.
+		word = uint16_t((word & ~0x0fffu) | bad_payload_words);
+		memcpy(duplicate + 2, &word, sizeof(word));
+
+		auto bad = bitstream;
+		bad.insert(bad.end(), duplicate, duplicate + sizeof(duplicate));
+
+		pyrowave_decoder_clear(decoder);
+		ASSERT_THAT(pyrowave_decoder_push_packet(decoder, bad.data(), bad.size()) == PYROWAVE_ERROR_INVALID_ARGUMENT);
+
+		// The same header on its own, after the frame was received.
+		pyrowave_decoder_clear(decoder);
+		CHECKED(pyrowave_decoder_push_packet(decoder, bitstream.data(), bitstream.size()));
+		ASSERT_THAT(pyrowave_decoder_push_packet(decoder, duplicate, sizeof(duplicate)) == PYROWAVE_ERROR_INVALID_ARGUMENT);
+	}
+
+	pyrowave_decoder_destroy(decoder);
+	pyrowave_encoder_destroy(encoder);
+	pyrowave_device_destroy(device);
+}
+
 int main()
 {
 	printf("Running system stability test ...\n");
@@ -875,6 +965,7 @@ int main()
 	test_encode_cpu_buffer_validation(true);
 	test_encoder_create_validation();
 	test_decoder_create_validation();
+	test_malformed_duplicate_block();
 
 	printf("Passed all tests :)\n");
 }

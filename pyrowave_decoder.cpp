@@ -139,14 +139,8 @@ bool Decoder::Impl::decode_packet(const BitstreamHeader *header)
 		return true;
 	}
 
+	// push_packet() has already checked that payload_words covers at least the header.
 	auto *payload_words = reinterpret_cast<const uint32_t *>(header);
-
-	if (sizeof(*header) / sizeof(uint32_t) > header->payload_words)
-	{
-		LOGE("payload_words is not large enough.\n");
-		return false;
-	}
-
 	payload_data_cpu.insert(
 			payload_data_cpu.end(),
 			payload_words,
@@ -213,6 +207,15 @@ bool Decoder::Impl::push_packet(const void *data_, size_t size)
 		}
 
 		size_t packet_size = header->payload_words * sizeof(uint32_t);
+
+		// A block packet always contains at least its own header. Check this before anything else:
+		// decode_packet() skips duplicate blocks without looking at them, and a packet size of 0
+		// would never advance the parser.
+		if (packet_size < sizeof(*header))
+		{
+			LOGE("payload_words %u is not large enough.\n", unsigned(header->payload_words));
+			return false;
+		}
 
 		if (packet_size > size)
 		{
