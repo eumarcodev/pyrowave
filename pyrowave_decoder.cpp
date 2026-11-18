@@ -312,7 +312,7 @@ bool Decoder::Impl::dequant(CommandBuffer &cmd)
 		cmd.set_program(shaders.wavelet_dequant[0]);
 
 	cmd.begin_region("DWT dequant");
-	auto start_dequant = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_dequant = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	cmd.image_barrier(*wavelet_img_high_res, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
 	                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
@@ -378,10 +378,10 @@ bool Decoder::Impl::dequant(CommandBuffer &cmd)
 	            fragment_path ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 	            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-	auto end_dequant = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto end_dequant = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.end_region();
 	cmd.enable_subgroup_size_control(false);
-	device->register_time_interval("GPU", std::move(start_dequant), std::move(end_dequant), "Dequant");
+	register_profiling_interval(*device, "GPU", std::move(start_dequant), std::move(end_dequant), "Dequant");
 
 	return true;
 }
@@ -417,7 +417,7 @@ bool Decoder::Impl::idwt_fragment(CommandBuffer &cmd, const ViewBuffers &views)
 	}
 	cmd.end_barrier_batch();
 
-	auto start_idwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+	auto start_idwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
 	struct Push
 	{
@@ -691,8 +691,8 @@ bool Decoder::Impl::idwt_fragment(CommandBuffer &cmd, const ViewBuffers &views)
 		cmd.end_region();
 	}
 
-	auto end_idwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-	device->register_time_interval("GPU", std::move(start_idwt), std::move(end_idwt), "iDWT fragment");
+	auto end_idwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_idwt), std::move(end_idwt), "iDWT fragment");
 
 	cmd.set_specialization_constant_mask(0);
 
@@ -707,7 +707,7 @@ bool Decoder::Impl::idwt(CommandBuffer &cmd, const ViewBuffers &views)
 	cmd.set_program(shaders.idwt[Configuration::get().get_precision()]);
 	cmd.enable_subgroup_size_control(false);
 
-	auto start_idwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_idwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	struct
 	{
@@ -781,8 +781,8 @@ bool Decoder::Impl::idwt(CommandBuffer &cmd, const ViewBuffers &views)
 		            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 	}
 
-	auto end_idwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	device->register_time_interval("GPU", std::move(start_idwt), std::move(end_idwt), "iDWT");
+	auto end_idwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_idwt), std::move(end_idwt), "iDWT");
 	return true;
 }
 

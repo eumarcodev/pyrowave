@@ -216,7 +216,7 @@ void Encoder::Impl::init_block_meta()
 bool Encoder::Impl::block_packing(CommandBuffer &cmd, const BitstreamBuffers &buffers, float quant_scale)
 {
 	cmd.begin_region("DWT block packing");
-	auto start_packing = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_packing = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.set_program(shaders.block_packing);
 	cmd.set_storage_buffer(0, 0, *buffers.bitstream.buffer, buffers.bitstream.offset, buffers.bitstream.size);
 	cmd.set_storage_buffer(0, 1, *buffers.meta.buffer, buffers.meta.offset, buffers.meta.size);
@@ -278,12 +278,12 @@ bool Encoder::Impl::block_packing(CommandBuffer &cmd, const BitstreamBuffers &bu
 		}
 	}
 
-	auto end_packing = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto end_packing = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
 	            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
 
-	device->register_time_interval("GPU", std::move(start_packing), std::move(end_packing), "Packing");
+	register_profiling_interval(*device, "GPU", std::move(start_packing), std::move(end_packing), "Packing");
 	cmd.end_region();
 
 	return true;
@@ -324,7 +324,7 @@ bool Encoder::Impl::resolve_rdo(CommandBuffer &cmd, size_t target_payload_size)
 {
 	cmd.begin_region("DWT resolve");
 
-	auto start_resolve = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_resolve = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	if (target_payload_size >= sizeof(BitstreamSequenceHeader))
 		target_payload_size -= sizeof(BitstreamSequenceHeader);
@@ -371,15 +371,15 @@ bool Encoder::Impl::resolve_rdo(CommandBuffer &cmd, size_t target_payload_size)
 	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 	cmd.end_region();
 
-	auto end_resolve = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	device->register_time_interval("GPU", std::move(start_resolve), std::move(end_resolve), "Resolve");
+	auto end_resolve = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_resolve), std::move(end_resolve), "Resolve");
 	cmd.set_specialization_constant_mask(0);
 	return true;
 }
 
 bool Encoder::Impl::analyze_rdo(CommandBuffer &cmd)
 {
-	auto start_analyze = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_analyze = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.begin_region("DWT analyze");
 	cmd.set_program(shaders.analyze_rate_control);
 
@@ -447,14 +447,14 @@ bool Encoder::Impl::analyze_rdo(CommandBuffer &cmd)
 	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
 	cmd.end_region();
-	auto end_analyze = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	device->register_time_interval("GPU", std::move(start_analyze), std::move(end_analyze), "Analyze");
+	auto end_analyze = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_analyze), std::move(end_analyze), "Analyze");
 	return true;
 }
 
 bool Encoder::Impl::quant(CommandBuffer &cmd, float quant_scale)
 {
-	auto start_quant = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_quant = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	cmd.begin_region("DWT quantize");
 	cmd.set_program(shaders.wavelet_quant);
 
@@ -522,8 +522,8 @@ bool Encoder::Impl::quant(CommandBuffer &cmd, float quant_scale)
 	cmd.barrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
 	            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
-	auto end_quant = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	device->register_time_interval("GPU", std::move(start_quant), std::move(end_quant), "Quant");
+	auto end_quant = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_quant), std::move(end_quant), "Quant");
 	return true;
 }
 
@@ -545,7 +545,7 @@ bool Encoder::Impl::dwt(CommandBuffer &cmd, const ViewBuffers &views)
 	cmd.set_specialization_constant(0, false);
 	cmd.set_specialization_constant(1, 1.0f);
 
-	auto start_dwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	auto start_dwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	for (int output_level = 0; output_level < DecompositionLevels; output_level++)
 	{
@@ -631,8 +631,8 @@ bool Encoder::Impl::dwt(CommandBuffer &cmd, const ViewBuffers &views)
 		cmd.set_specialization_constant(1, 1.0f);
 	}
 
-	auto end_dwt = cmd.write_timestamp(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-	device->register_time_interval("GPU", std::move(start_dwt), std::move(end_dwt), "DWT");
+	auto end_dwt = write_profiling_timestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	register_profiling_interval(*device, "GPU", std::move(start_dwt), std::move(end_dwt), "DWT");
 	cmd.set_specialization_constant_mask(0);
 	return true;
 }

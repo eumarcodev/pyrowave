@@ -149,10 +149,35 @@ class Configuration
 public:
 	static Configuration &get();
 	int get_precision() const;
+
+	// GPU timestamps per stage, reported by pyrowave_device_report_performance_stats().
+	// They are for profiling only and cost CPU time on every frame, so they are off by default.
+	// Enable with PYROWAVE_GPU_TIMESTAMPS=1.
+	bool get_gpu_timestamps() const;
+	// Not synchronized: call it before creating encoders or decoders.
+	void set_gpu_timestamps(bool enable);
 private:
 	Configuration();
 	int precision;
+	bool gpu_timestamps = false;
 };
+
+// Writes a timestamp only when GPU timestamps are enabled, otherwise returns an empty handle.
+inline Vulkan::QueryPoolHandle write_profiling_timestamp(Vulkan::CommandBuffer &cmd, VkPipelineStageFlags2 stage)
+{
+	if (!Configuration::get().get_gpu_timestamps())
+		return {};
+	return cmd.write_timestamp(stage);
+}
+
+// Registers the interval only when both timestamps were written.
+inline void register_profiling_interval(Vulkan::Device &device, const char *tid,
+                                        Vulkan::QueryPoolHandle start, Vulkan::QueryPoolHandle end,
+                                        const char *tag)
+{
+	if (start && end)
+		device.register_time_interval(tid, std::move(start), std::move(end), tag);
+}
 
 struct WaveletBuffers
 {

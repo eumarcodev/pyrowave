@@ -25,6 +25,12 @@ Configuration::Configuration()
 	}
 
 	LOGI("Selection precision level: %d\n", precision);
+
+	if (const char *env = getenv("PYROWAVE_GPU_TIMESTAMPS"))
+		gpu_timestamps = strtol(env, nullptr, 0) != 0;
+
+	if (gpu_timestamps)
+		LOGI("GPU timestamps enabled.\n");
 }
 
 Configuration &Configuration::get()
@@ -36,6 +42,16 @@ Configuration &Configuration::get()
 int Configuration::get_precision() const
 {
 	return precision;
+}
+
+bool Configuration::get_gpu_timestamps() const
+{
+	return gpu_timestamps;
+}
+
+void Configuration::set_gpu_timestamps(bool enable)
+{
+	gpu_timestamps = enable;
 }
 
 void WaveletBuffers::init_samplers()
