@@ -643,50 +643,69 @@ static void test_direct_interop()
 	CHECKED(pyrowave_decoder_push_packet(decoder, bitstream.get() + packet.offset, packet.size));
 	ASSERT_THAT(pyrowave_decoder_decode_is_ready(decoder, false));
 
-	for (auto &plane : gpu_buffers.planes)
+	const auto decode_and_validate = [&]()
 	{
-		plane.image = output_image->get_image();
-		plane.layout = VK_IMAGE_LAYOUT_GENERAL;
-	}
-
-	cmd = device.request_command_buffer();
-	// Redirect commands here.
-	pyrowave_device_set_command_buffer(pyro_device, cmd->get_command_buffer());
-	CHECKED(pyrowave_decoder_decode_gpu_buffer(decoder, nullptr, nullptr, &gpu_buffers));
-	pyrowave_device_set_command_buffer(pyro_device, VK_NULL_HANDLE);
-
-	cmd->image_barrier(*output_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-	                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-	                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-
-	BufferCreateInfo bufinfo = {};
-	bufinfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-	bufinfo.size = 64 * 64 * 3;
-	bufinfo.domain = BufferDomain::CachedHost;
-
-	auto readback_buffer = device.create_buffer(bufinfo);
-	cmd->copy_image_to_buffer(*readback_buffer, *output_image, 0,  {}, { 64, 64, 1 }, 0, 0,
-		{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 3 });
-	cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-	             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
-	fence.reset();
-	device.submit(cmd, &fence);
-	fence->wait();
-
-	auto *readback_ptr = static_cast<const uint8_t *>(device.map_host_buffer(*readback_buffer, MEMORY_ACCESS_READ_BIT));
-
-	for (int y = 0; y < 64; y++)
-	{
-		for (int x = 0; x < 64; x++)
+		for (auto &plane : gpu_buffers.planes)
 		{
-			int y_delta = std::abs(readback_ptr[0 * 64 * 64 + y * 64 + x] - (y + x + 1));
-			int cb_delta = std::abs(readback_ptr[1 * 64 * 64 + y * 64 + x] - (y + x + 2));
-			int cr_delta = std::abs(readback_ptr[2 * 64 * 64 + y * 64 + x] - (y + x + 3));
-			ASSERT_THAT(y_delta <= 1);
-			ASSERT_THAT(cb_delta <= 1);
-			ASSERT_THAT(cr_delta <= 1);
+			plane.image = output_image->get_image();
+			plane.layout = VK_IMAGE_LAYOUT_GENERAL;
 		}
-	}
+
+		cmd = device.request_command_buffer();
+		// The previous readback left the image in TRANSFER_SRC.
+		cmd->image_barrier(*output_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+		                   VK_PIPELINE_STAGE_2_COPY_BIT, 0,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+		// Redirect commands here.
+		pyrowave_device_set_command_buffer(pyro_device, cmd->get_command_buffer());
+		CHECKED(pyrowave_decoder_decode_gpu_buffer(decoder, nullptr, nullptr, &gpu_buffers));
+		pyrowave_device_set_command_buffer(pyro_device, VK_NULL_HANDLE);
+
+		cmd->image_barrier(*output_image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+		                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+		                   VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+
+		BufferCreateInfo bufinfo = {};
+		bufinfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+		bufinfo.size = 64 * 64 * 3;
+		bufinfo.domain = BufferDomain::CachedHost;
+
+		auto readback_buffer = device.create_buffer(bufinfo);
+		cmd->copy_image_to_buffer(*readback_buffer, *output_image, 0,  {}, { 64, 64, 1 }, 0, 0,
+			{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 3 });
+		cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+		             VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
+		fence.reset();
+		device.submit(cmd, &fence);
+		fence->wait();
+
+		auto *readback_ptr = static_cast<const uint8_t *>(device.map_host_buffer(*readback_buffer, MEMORY_ACCESS_READ_BIT));
+
+		for (int y = 0; y < 64; y++)
+		{
+			for (int x = 0; x < 64; x++)
+			{
+				int y_delta = std::abs(readback_ptr[0 * 64 * 64 + y * 64 + x] - (y + x + 1));
+				int cb_delta = std::abs(readback_ptr[1 * 64 * 64 + y * 64 + x] - (y + x + 2));
+				int cr_delta = std::abs(readback_ptr[2 * 64 * 64 + y * 64 + x] - (y + x + 3));
+				ASSERT_THAT(y_delta <= 1);
+				ASSERT_THAT(cb_delta <= 1);
+				ASSERT_THAT(cr_delta <= 1);
+			}
+		}
+	};
+
+	// First decode wraps the output image, the second one reuses the cached view.
+	decode_and_validate();
+	decode_and_validate();
+
+	// Recreate the output image. The cached views must be dropped first, since the new image
+	// can get the same VkImage handle.
+	output_image.reset();
+	pyrowave_decoder_invalidate_views(decoder);
+	output_image = device.create_image(image_info);
+	ASSERT_THAT(output_image);
+	decode_and_validate();
 
 	pyrowave_encoder_destroy(encoder);
 	pyrowave_decoder_destroy(decoder);

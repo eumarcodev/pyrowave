@@ -616,6 +616,13 @@ PYROWAVE_PUBLIC_API pyrowave_result
 pyrowave_encoder_compute_block_active_words(pyrowave_encoder encoder,
 		int bands, uint32_t *words, size_t word_count);
 
+// Drops the cached image views of images passed to pyrowave_encoder_encode_gpu() and
+// pyrowave_encoder_encode_gpu_scaled(). Those images are wrapped once and reused while the
+// pyrowave_image_view description is unchanged, so call this after destroying or recreating
+// application-created images. Not needed for images from pyrowave_image_create(), since
+// pyrowave_image_destroy() drops the cached views. Work already submitted is not affected.
+PYROWAVE_PUBLIC_API void pyrowave_encoder_invalidate_views(pyrowave_encoder encoder);
+
 // Implementation ensures GPU is idle before destroying objects.
 PYROWAVE_PUBLIC_API void
 pyrowave_encoder_destroy(pyrowave_encoder encoder);
@@ -670,6 +677,11 @@ pyrowave_decoder_decode_is_ready_with_sideband(pyrowave_decoder decoder, bool al
 //   If fragment path, memory must be visible to COLOR_ATTACHMENT_OUTPUT / COLOR_ATTACHMENT_WRITE.
 //   If compute path, memory must be visible to COMPUTE_SHADER / SHADER_STORAGE_WRITE.
 // - After: Application must synchronize against the stages above before it can read or transition away.
+// The VkImages passed in buffers are wrapped in image views that are cached and reused on later calls with the
+// same pyrowave_image_view description. Images from pyrowave_image_create() are handled automatically
+// (pyrowave_image_destroy() drops the cached views). If the application destroys a VkImage it created itself
+// while the decoder is alive, it must call pyrowave_decoder_invalidate_views() before the next decode,
+// since a new image can get the same VkImage handle.
 PYROWAVE_PUBLIC_API pyrowave_result
 pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
                                    const pyrowave_gpu_sync_operation *acquire,
@@ -696,6 +708,11 @@ pyrowave_decoder_decode_cpu_buffer_complete(pyrowave_decoder decoder, const pyro
 // Not compatible with fragment decoding path for now.
 PYROWAVE_PUBLIC_API void
 pyrowave_decoder_set_ycbcr_scaling_factor(pyrowave_decoder decoder, float factor);
+
+// Drops the cached image views of images passed to pyrowave_decoder_decode_gpu_buffer().
+// Call it after destroying or recreating application-created images (e.g. on resize).
+// Not needed for images from pyrowave_image_create(). Work already submitted is not affected.
+PYROWAVE_PUBLIC_API void pyrowave_decoder_invalidate_views(pyrowave_decoder decoder);
 
 // Implementation ensures GPU is idle before destroying objects.
 PYROWAVE_PUBLIC_API void pyrowave_decoder_destroy(pyrowave_decoder decoder);

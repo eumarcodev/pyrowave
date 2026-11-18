@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "context.hpp"
+#include <atomic>
 #include "device.hpp"
 #include "image.hpp"
 #include "buffer.hpp"
@@ -45,6 +46,9 @@ struct pyrowave_device_opaque
 	Device device;
 	VkCommandBuffer cmd = VK_NULL_HANDLE;
 	CommandBuffer::Type queue_type = CommandBuffer::Type::Generic;
+	// Bumped by pyrowave_image_destroy(). Cached image views are dropped when it changes,
+	// since a new image can get the VkImage handle of a destroyed one.
+	std::atomic<uint64_t> image_generation{0};
 };
 
 void pyrowave_device_set_command_buffer(pyrowave_device device, VkCommandBuffer cmd)
@@ -594,6 +598,7 @@ void pyrowave_sync_object_destroy(pyrowave_sync_object sync)
 
 struct pyrowave_image_opaque
 {
+	pyrowave_device pyro_device = nullptr;
 	Device *device = nullptr;
 	ImageHandle img;
 };
@@ -664,6 +669,7 @@ pyrowave_result pyrowave_image_create(const pyrowave_image_create_info *info, py
 		return PYROWAVE_ERROR_FAILED_EXTERNAL_HANDLE;
 
 	auto *image = new pyrowave_image_opaque();
+	image->pyro_device = info->device;
 	image->device = &device;
 	image->img = std::move(img);
 
@@ -878,11 +884,132 @@ void pyrowave_image_destroy(pyrowave_image image)
 {
 	auto *device = image->device;
 	Util::set_thread_logging_interface(&null_logger);
+	image->pyro_device->image_generation.fetch_add(1, std::memory_order_relaxed);
 	delete image;
 
 	// Pump frame contexts through to make sure memory gets freed eventually.
 	device->next_frame_context();
 }
+
+static bool wrap_view(Device *device, const pyrowave_image_view &view, ImageHandle &wrapped_image,
+                      ImageViewHandle &wrapped_view,
+                      VkImageUsageFlags usage)
+{
+	ImageCreateInfo image_info = {};
+	image_info.usage = usage;
+	image_info.type = VK_IMAGE_TYPE_2D;
+	image_info.domain = ImageDomain::Physical;
+	image_info.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+	image_info.width = view.width;
+	image_info.height = view.height;
+	image_info.format = view.image_format;
+
+	// The exact numbers aren't important.
+	image_info.layers = view.layer + 1;
+	image_info.levels = view.mip_level + 1;
+
+	image_info.layout = view.layout == VK_IMAGE_LAYOUT_GENERAL ? ImageLayout::General : ImageLayout::Optimal;
+	wrapped_image = device->wrap_image(image_info, view.image);
+	if (!wrapped_image)
+		return false;
+
+	ImageViewCreateInfo view_info = {};
+	view_info.image = wrapped_image.get();
+	view_info.format = view.view_format;
+	view_info.view_type = VK_IMAGE_VIEW_TYPE_2D;
+	view_info.layers = 1;
+	view_info.levels = 1;
+	view_info.base_level = view.mip_level;
+	view_info.base_layer = view.layer;
+	view_info.swizzle.r = view.swizzle;
+	view_info.swizzle.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+	view_info.swizzle.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+	view_info.swizzle.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+	view_info.aspect = view.aspect;
+	wrapped_view = device->create_image_view(view_info);
+	if (!wrapped_view)
+		return false;
+
+	return true;
+}
+
+static bool same_image_view(const pyrowave_image_view &a, const pyrowave_image_view &b)
+{
+	return a.image == b.image && a.width == b.width && a.height == b.height &&
+	       a.image_format == b.image_format && a.view_format == b.view_format &&
+	       a.mip_level == b.mip_level && a.layer == b.layer && a.aspect == b.aspect &&
+	       a.swizzle == b.swizzle && a.layout == b.layout;
+}
+
+// Wrapping a client VkImage creates a Granite image and a new VkImageView. Clients pass the same few images on
+// every frame, so the wrapped views are kept and reused while the view description is unchanged.
+// See pyrowave_decoder_invalidate_views() for the lifetime rules.
+struct WrappedViewCache
+{
+	struct Entry
+	{
+		pyrowave_image_view key = {};
+		VkImageUsageFlags usage = 0;
+		ImageHandle image;
+		ImageViewHandle view;
+	};
+
+	// Enough for 3 planes of a few images used in rotation.
+	enum { MaxEntries = 8 };
+	Entry entries[MaxEntries];
+	unsigned next_replace = 0;
+	uint64_t image_generation = 0;
+
+	const ImageView *wrap(pyrowave_device pyro_device, const pyrowave_image_view &view, VkImageUsageFlags usage)
+	{
+		uint64_t generation = pyro_device->image_generation.load(std::memory_order_relaxed);
+		if (generation != image_generation)
+		{
+			clear();
+			image_generation = generation;
+		}
+
+		for (auto &entry : entries)
+			if (entry.view && entry.usage == usage && same_image_view(entry.key, view))
+				return entry.view.get();
+
+		auto &entry = entries[next_replace];
+		next_replace = (next_replace + 1) % MaxEntries;
+		entry = {};
+		if (!wrap_view(&pyro_device->device, view, entry.image, entry.view, usage))
+		{
+			entry = {};
+			return nullptr;
+		}
+
+		entry.key = view;
+		entry.usage = usage;
+		return entry.view.get();
+	}
+
+	void clear()
+	{
+		for (auto &entry : entries)
+			entry = {};
+		next_replace = 0;
+	}
+};
+
+struct WrappedViewBuffers : ViewBuffers
+{
+	bool wrap(WrappedViewCache &cache, pyrowave_device pyro_device, const pyrowave_gpu_buffers *buffers,
+	          VkImageUsageFlags usage)
+	{
+		for (int i = 0; i < 3; i++)
+		{
+			planes[i] = cache.wrap(pyro_device, buffers->planes[i], usage);
+			if (!planes[i])
+				return false;
+		}
+
+		return true;
+	}
+};
 
 struct pyrowave_encoder_opaque
 {
@@ -894,6 +1021,8 @@ struct pyrowave_encoder_opaque
 	int width = 0;
 	int height = 0;
 	float ycbcr_scaling_factor = 1.0f;
+
+	WrappedViewCache view_cache;
 
 	// For scaling path.
 	ImageHandle scaler_planes[3];
@@ -946,67 +1075,6 @@ pyrowave_encoder_create(const pyrowave_encoder_create_info *info, pyrowave_encod
 
 	*encoder = enc;
 	return PYROWAVE_SUCCESS;
-}
-
-struct WrappedViewBuffers : ViewBuffers
-{
-	ImageHandle wrapped_images[3];
-	ImageViewHandle image_views[3];
-	bool wrap(Device *device, const pyrowave_gpu_buffers *buffers, VkImageUsageFlags usage);
-};
-
-static bool wrap_view(Device *device, const pyrowave_image_view &view, ImageHandle &wrapped_image,
-                      ImageViewHandle &wrapped_view,
-                      VkImageUsageFlags usage)
-{
-	ImageCreateInfo image_info = {};
-	image_info.usage = usage;
-	image_info.type = VK_IMAGE_TYPE_2D;
-	image_info.domain = ImageDomain::Physical;
-	image_info.flags = VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
-	image_info.width = view.width;
-	image_info.height = view.height;
-	image_info.format = view.image_format;
-
-	// The exact numbers aren't important.
-	image_info.layers = view.layer + 1;
-	image_info.levels = view.mip_level + 1;
-
-	image_info.layout = view.layout == VK_IMAGE_LAYOUT_GENERAL ? ImageLayout::General : ImageLayout::Optimal;
-	wrapped_image = device->wrap_image(image_info, view.image);
-	if (!wrapped_image)
-		return false;
-
-	ImageViewCreateInfo view_info = {};
-	view_info.image = wrapped_image.get();
-	view_info.format = view.view_format;
-	view_info.view_type = VK_IMAGE_VIEW_TYPE_2D;
-	view_info.layers = 1;
-	view_info.levels = 1;
-	view_info.base_level = view.mip_level;
-	view_info.base_layer = view.layer;
-	view_info.swizzle.r = view.swizzle;
-	view_info.swizzle.g = VK_COMPONENT_SWIZZLE_IDENTITY;
-	view_info.swizzle.b = VK_COMPONENT_SWIZZLE_IDENTITY;
-	view_info.swizzle.a = VK_COMPONENT_SWIZZLE_IDENTITY;
-	view_info.aspect = view.aspect;
-	wrapped_view = device->create_image_view(view_info);
-	if (!wrapped_view)
-		return false;
-
-	return true;
-}
-
-bool WrappedViewBuffers::wrap(Device *device, const pyrowave_gpu_buffers *buffers, VkImageUsageFlags usage)
-{
-	for (int i = 0; i < 3; i++)
-	{
-		if (!wrap_view(device, buffers->planes[i], wrapped_images[i], image_views[i], usage))
-			return false;
-		planes[i] = image_views[i].get();
-	}
-
-	return true;
 }
 
 static void pyrowave_device_wait_semaphore(Device *device, CommandBuffer::Type queue_type, const pyrowave_gpu_sync_operation *acquire, VkPipelineStageFlags2 stages)
@@ -1189,7 +1257,7 @@ pyrowave_encoder_encode_gpu(pyrowave_encoder encoder,
 {
 	auto *device = encoder->device;
 	WrappedViewBuffers views = {};
-	if (!views.wrap(device, buffers, VK_IMAGE_USAGE_SAMPLED_BIT))
+	if (!views.wrap(encoder->view_cache, encoder->pyro_device, buffers, VK_IMAGE_USAGE_SAMPLED_BIT))
 		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
 	views.range_scale = encoder->ycbcr_scaling_factor;
 	device->next_frame_context();
@@ -1302,7 +1370,7 @@ pyrowave_encoder_encode_gpu_scaled(pyrowave_encoder encoder,
 		buffers.planes[2].aspect = VK_IMAGE_ASPECT_PLANE_1_BIT;
 		buffers.planes[2].swizzle = VK_COMPONENT_SWIZZLE_G;
 
-		if (!wrapped.wrap(device, &buffers, VK_IMAGE_USAGE_SAMPLED_BIT))
+		if (!wrapped.wrap(encoder->view_cache, encoder->pyro_device, &buffers, VK_IMAGE_USAGE_SAMPLED_BIT))
 		{
 			device->submit_discard(cmd);
 			return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
@@ -1336,15 +1404,13 @@ pyrowave_encoder_encode_gpu_scaled(pyrowave_encoder encoder,
 	}
 	else if (format_ycbcr_num_planes(scaling_info->view.view_format) == 1)
 	{
-		ImageHandle wrapped_image;
-		ImageViewHandle wrapped_view;
-		if (!wrap_view(device, scaling_info->view, wrapped_image, wrapped_view, VK_IMAGE_USAGE_SAMPLED_BIT))
+		info.input = encoder->view_cache.wrap(encoder->pyro_device, scaling_info->view, VK_IMAGE_USAGE_SAMPLED_BIT);
+		if (!info.input)
 		{
 			device->submit_discard(cmd);
 			return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
 		}
 
-		info.input = wrapped_view.get();
 		for (int i = 0; i < 3; i++)
 			info.output_planes[i] = &encoder->scaler_planes[i]->get_view();
 		info.num_output_planes = 3;
@@ -1726,6 +1792,12 @@ void pyrowave_encoder_set_ycbcr_scaling_factor(pyrowave_encoder encoder, float f
 	encoder->ycbcr_scaling_factor = factor;
 }
 
+void pyrowave_encoder_invalidate_views(pyrowave_encoder encoder)
+{
+	Util::set_thread_logging_interface(&null_logger);
+	encoder->view_cache.clear();
+}
+
 void pyrowave_encoder_destroy(pyrowave_encoder encoder)
 {
 	auto *device = encoder->device;
@@ -1737,6 +1809,7 @@ void pyrowave_encoder_destroy(pyrowave_encoder encoder)
 struct pyrowave_decoder_opaque
 {
 	Device *device = nullptr;
+	WrappedViewCache view_cache;
 	pyrowave_device pyro_device = nullptr;
 	Decoder decoder;
 	bool fragment_path = false;
@@ -1841,7 +1914,8 @@ pyrowave_decoder_decode_gpu_buffer(pyrowave_decoder decoder,
 	device->next_frame_context();
 
 	WrappedViewBuffers views = {};
-	if (!views.wrap(device, buffers, decoder->fragment_path ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_STORAGE_BIT))
+	if (!views.wrap(decoder->view_cache, decoder->pyro_device, buffers,
+	                decoder->fragment_path ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : VK_IMAGE_USAGE_STORAGE_BIT))
 		return PYROWAVE_ERROR_OUT_OF_HOST_MEMORY;
 	views.range_scale = decoder->ycbcr_scaling_factor;
 
@@ -2140,6 +2214,12 @@ pyrowave_decoder_decode_cpu_buffer_synchronous(pyrowave_decoder decoder, const p
 void pyrowave_decoder_set_ycbcr_scaling_factor(pyrowave_decoder decoder, float factor)
 {
 	decoder->ycbcr_scaling_factor = factor;
+}
+
+void pyrowave_decoder_invalidate_views(pyrowave_decoder decoder)
+{
+	Util::set_thread_logging_interface(&null_logger);
+	decoder->view_cache.clear();
 }
 
 void pyrowave_decoder_destroy(pyrowave_decoder decoder)
