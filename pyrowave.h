@@ -182,6 +182,8 @@ PYROWAVE_PUBLIC_API pyrowave_result pyrowave_create_device_with_extensions(
 PYROWAVE_PUBLIC_API VkQueueGlobalPriority pyrowave_device_get_global_priority(pyrowave_device device);
 
 // For performance debugging, reports GPU timestamps.
+// Per-stage GPU timestamps are only recorded when the PYROWAVE_GPU_TIMESTAMPS environment variable is 1
+// when the library is first used. They are off by default because they cost CPU time on every frame.
 PYROWAVE_PUBLIC_API void
 pyrowave_device_report_performance_stats(pyrowave_device device, pyrowave_message_cb cb, void *userdata, bool reset);
 

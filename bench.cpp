@@ -251,5 +251,7 @@ int main(int argc, char **argv)
 	if (argc != 2)
 		return EXIT_FAILURE;
 
+	// The benchmark reports per-stage GPU times.
+	PyroWave::Configuration::get().set_gpu_timestamps(true);
 	run_vulkan_test(argv[1]);
 }
