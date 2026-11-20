@@ -38,7 +38,7 @@ ninja install                 # installs pyrowave.h, pyrowave-shared and its CMa
 - **IMPORTANT: NEVER clone or update Granite with `--recursive` for the standalone build**; use `checkout_granite.sh`. Never edit files inside `Granite/`.
 - **IMPORTANT: do not hand-edit `shaders/slangmosh*.hpp`**: change the shader sources and regenerate with `slangmosh.sh`.
 - **The C API in `pyrowave.h` is shared by Helios and Selene**: a signature or behaviour change MUST be matched in both consumers (and bumped there) in the same release cycle.
-- Branches: this repo has no `develop`. Branch from `master` (`feat/*`, `fix/*`, `perf/*`), PR to `master`. Never commit directly to `master`.
+- Branches: same gitflow as Helios and Selene. `develop` is the default branch: `feature/*` from `develop`, PR to `develop`; `master` moves only through a PR `develop` → `master` (no release workflows here). Never commit directly to `develop` or `master`: the `master-develop` ruleset rejects direct pushes, force-pushes and deletion of both.
 - Performance changes count only with a real measurement (encode time on the host, decode time and transit on the device); say so when a gain is not measurable.
 - No device-specific code paths or constants taken from the bench devices.
 
@@ -46,7 +46,7 @@ ninja install                 # installs pyrowave.h, pyrowave-shared and its CMa
 
 - Change only what the task needs; unrelated findings become a new issue in `eumarcodev/Helios-Server` (component label `codec`, feature label `pyrowave`).
 - There is no CI here: build and run `pyrowave-c-test` locally before opening the PR.
-- Flow for a codec change: PR here → merge → separate submodule bump PR in Helios and/or Selene.
+- Flow for a codec change: PR here into `develop` → merge → PR `develop` → `master` → separate submodule bump PR in Helios and/or Selene.
 - Conventional Commits with a scope (`feat(encoder):`, `fix(decoder):`, `perf(c-api):`), one commit per logical phase.
 
 ## 5. Out of scope
