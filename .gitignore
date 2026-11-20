@@ -4,3 +4,6 @@
 /build-steamrt
 /steamrt-output
 .DS_Store
+
+# local build directory (see README)
+/build/
