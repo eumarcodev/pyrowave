@@ -21,7 +21,7 @@ ninja install                 # installs pyrowave.h, pyrowave-shared and its CMa
 - Sample/CLI tools (`pyrowave-encode`, `pyrowave-decode`, viewer, sandbox) need the full Granite (`git submodule update --init --recursive Granite`) and `-DPYROWAVE_DEVEL=ON`.
 - Android standalone: add `-DCMAKE_TOOLCHAIN_FILE=$ANDROID_HOME/ndk/<ver>/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a`.
 - After changing any `.comp`/`.frag`/`.vert` shader, regenerate the embedded headers with `slangmosh.sh` (needs the `slangmosh` tool).
-- Real validation of a codec change is done through the consumers: Helios `test_sunshine` (`test_pyrowave_*`) and a Helios + Selene stream session.
+- Real validation of a codec change is done through the consumers: Helios `test_helios` (`test_pyrowave_*`) and a Helios + Selene stream session.
 
 ## 2. Architecture map
 
